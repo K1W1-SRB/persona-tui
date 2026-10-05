@@ -5,3 +5,5 @@
 
 # Spotify login token (includes the refresh token) - never commit
 /.spotify_token_cache.json
+
+/.tasks.json
