@@ -1,9 +1,11 @@
+use crate::spotify::{PlayerSnapshot, PlayerUpdate};
 use crate::ui;
 use chrono::{Days, Duration, Local, Months, NaiveDate, NaiveDateTime};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{DefaultTerminal, Frame};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::sync::mpsc::{Receiver, TryRecvError};
 
 const TASKS_FILE: &str = "tasks.json";
 
@@ -189,21 +191,67 @@ pub struct App {
     pub(crate) new_task_draft: Option<NewTaskDraft>,
     /// Day highlighted on the calendar tab; the month shown is the month this falls in.
     pub(crate) calendar_selected: NaiveDate,
+    pub(crate) music: MusicState,
+}
+
+/// Where the music tab's data comes from.
+pub(crate) enum MusicSource {
+    /// Connected; snapshots arrive from the polling thread.
+    Spotify(Receiver<PlayerUpdate>),
+    /// Spotify isn't set up or failed to connect; the message says why.
+    Unavailable(String),
+}
+
+pub(crate) struct MusicState {
+    pub(crate) source: MusicSource,
+    /// Most recent successful poll, kept while later polls fail.
+    pub(crate) snapshot: Option<PlayerSnapshot>,
+    /// Why the latest poll failed, cleared by the next success.
+    pub(crate) error: Option<String>,
+}
+
+impl MusicState {
+    /// Applies every update that has arrived since the last frame.
+    fn receive_updates(&mut self) {
+        let MusicSource::Spotify(receiver) = &self.source else {
+            return;
+        };
+        loop {
+            match receiver.try_recv() {
+                Ok(Ok(snapshot)) => {
+                    self.snapshot = Some(snapshot);
+                    self.error = None;
+                }
+                Ok(Err(message)) => self.error = Some(message),
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => {
+                    self.source = MusicSource::Unavailable("Spotify polling stopped".to_string());
+                    return;
+                }
+            }
+        }
+    }
 }
 
 impl App {
-    pub fn new() -> Self {
+    pub fn new(music_source: MusicSource) -> Self {
         Self {
             active_tab: Tab::default(),
             tasks: load_tasks(),
             selected: 0,
             new_task_draft: None,
             calendar_selected: Local::now().date_naive(),
+            music: MusicState {
+                source: music_source,
+                snapshot: None,
+                error: None,
+            },
         }
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
         loop {
+            self.music.receive_updates();
             terminal.draw(|frame| self.render(frame))?;
 
             // Timeout with no input: loop back and redraw so the clock stays current.

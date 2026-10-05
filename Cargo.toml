@@ -7,6 +7,10 @@ edition = "2024"
 chrono = { version = "0.4.45", features = ["serde"] }
 color-eyre = "0.6.5"
 crossterm = "0.29.0"
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 ratatui = "0.30.2"
+rspotify = { version = "0.16.1", default-features = false, features = ["client-ureq", "ureq-rustls-tls", "cli"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+toml = "1.1.6"
+ureq = "2.12"

@@ -1,14 +1,16 @@
-use super::theme::{ACCENT, FAINT, MUTED, SELECTED_BG, TEXT, TRACK};
+use super::theme::{ACCENT, FAINT, MUTED, SELECTED_BG, TEXT, TRACK, URGENT};
 use super::{content_area, divider};
-use crate::app::App;
+use crate::app::{App, MusicSource, MusicState};
+use crate::cover::{self, Cover, CoverImage};
+use crate::spotify::ItemInfo;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Widget};
+use ratatui::widgets::{Block, Paragraph, Widget, Wrap};
 
-/// Everything the music tab draws. The UI only reads this; fill it from the real player.
+/// Everything the music tab draws, borrowed from the latest player snapshot.
 pub(crate) struct MusicView<'a> {
     pub(crate) queue: &'a [TrackView<'a>],
     /// Index into `queue` of the track that's playing.
@@ -21,69 +23,103 @@ pub(crate) struct TrackView<'a> {
     pub(crate) title: &'a str,
     pub(crate) artist: &'a str,
     pub(crate) duration_secs: u32,
+    /// Real album art, once the poller has downloaded it.
+    pub(crate) cover: Option<&'a Cover>,
 }
 
-// Placeholder until the player logic exists.
-const SAMPLE_QUEUE: [TrackView<'static>; 7] = [
-    sample("Burn My Dread", 215),
-    sample("Mass Destruction", 242),
-    sample("Master of Tartarus", 228),
-    sample("Color Your Night", 179),
-    sample("Iwatodai Dorm", 107),
-    sample("Living With Determination", 201),
-    sample("Deep Breath Deep Breath", 189),
-];
-
-const fn sample(title: &'static str, duration_secs: u32) -> TrackView<'static> {
-    TrackView {
-        title,
-        artist: "Shoji Meguro",
-        duration_secs,
+impl<'a> TrackView<'a> {
+    fn from_item(item: &'a ItemInfo) -> Self {
+        Self {
+            title: &item.title,
+            artist: &item.by,
+            duration_secs: item.duration_secs.max(0) as u32,
+            cover: item.cover.as_deref(),
+        }
     }
 }
 
-fn sample_view() -> MusicView<'static> {
-    MusicView {
-        queue: &SAMPLE_QUEUE,
-        current: 0,
-        elapsed_secs: 134,
-        playing: true,
-    }
-}
-
-const COVER_WIDTH: u16 = 7;
-const COVER_HEIGHT: u16 = 3;
-const GLYPH_WIDTH: u16 = 5;
-const QUEUE_ROW_HEIGHT: u16 = 2;
+// Sized to match the pixel grids the poller builds, so covers fill their space exactly.
+const COVER_WIDTH: u16 = cover::LARGE_COLS;
+const COVER_HEIGHT: u16 = cover::LARGE_ROWS;
+const GLYPH_WIDTH: u16 = cover::SMALL_COLS;
+const QUEUE_ROW_HEIGHT: u16 = cover::SMALL_ROWS;
 const QUEUE_ROW_GAP: u16 = 1;
 
 pub fn render(frame: &mut Frame, app: &App, rows: &[Rect]) {
-    let view = sample_view();
+    let area = content_area(rows);
+    frame.render_widget(super::footer(app.active_tab), rows[4]);
+
+    let snapshot = app.music.snapshot.as_ref();
+    let Some((snapshot, now_playing)) =
+        snapshot.and_then(|s| s.now_playing.as_ref().map(|now| (s, now)))
+    else {
+        render_status(frame, &app.music, area);
+        return;
+    };
+
+    // The playing track first, then what's queued after it.
+    let tracks: Vec<TrackView> = std::iter::once(now_playing)
+        .chain(snapshot.queue.iter())
+        .map(TrackView::from_item)
+        .collect();
+    let view = MusicView {
+        queue: &tracks,
+        current: 0,
+        elapsed_secs: snapshot.current_progress_secs().max(0) as u32,
+        playing: snapshot.is_playing,
+    };
 
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4), // now playing
+            Constraint::Length(COVER_HEIGHT), // now playing
             Constraint::Length(1), // gap
             Constraint::Length(1), // divider
             Constraint::Length(1), // "QUEUE · 7 TRACKS"
             Constraint::Length(1), // gap
             Constraint::Min(0),    // queue
         ])
-        .split(content_area(rows));
+        .split(area);
 
     render_now_playing(frame, &view, sections[0]);
     frame.render_widget(divider(), sections[2]);
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            format!("QUEUE · {} TRACKS", view.queue.len()),
-            Style::new().fg(FAINT),
-        )),
-        sections[3],
-    );
-    render_queue(frame, &view, sections[5]);
 
-    frame.render_widget(super::footer(app.active_tab), rows[4]);
+    let mut queue_header = vec![Span::styled(
+        format!("QUEUE · {} TRACKS", view.queue.len()),
+        Style::new().fg(FAINT),
+    )];
+    // Keep showing the last good data, but say it may be stale.
+    if app.music.error.is_some() {
+        queue_header.push(Span::styled(" · last update failed", Style::new().fg(URGENT)));
+    }
+    frame.render_widget(Paragraph::new(Line::from(queue_header)), sections[3]);
+
+    render_queue(frame, &view, sections[5]);
+}
+
+/// Why there's no track to show. Shared with the Velvet Room's now-playing card.
+pub(super) fn status_message(music: &MusicState) -> String {
+    match (&music.source, &music.error, &music.snapshot) {
+        (MusicSource::Unavailable(reason), _, _) => reason.clone(),
+        (_, Some(error), _) => format!("Spotify error: {error}"),
+        (_, None, None) => "connecting to Spotify…".to_string(),
+        (_, None, Some(_)) => "nothing playing — start something in Spotify".to_string(),
+    }
+}
+
+/// Shown instead of the player when there's nothing to draw yet.
+fn render_status(frame: &mut Frame, music: &MusicState, area: Rect) {
+    let message = status_message(music);
+
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::styled("NOW PLAYING", Style::new().fg(MUTED))),
+            Line::from(""),
+            Line::from(Span::styled(message, Style::new().fg(TEXT))),
+        ])
+        .wrap(Wrap { trim: true }),
+        area,
+    );
 }
 
 fn render_now_playing(frame: &mut Frame, view: &MusicView, area: Rect) {
@@ -108,11 +144,21 @@ fn render_now_playing(frame: &mut Frame, view: &MusicView, area: Rect) {
         height: COVER_HEIGHT.min(cols[0].height),
         ..cols[0]
     };
-    frame.render_widget(CoverArt::new(track.title), cover_area);
+    match track.cover {
+        Some(cover) => frame.render_widget(CoverImage::new(&cover.large), cover_area),
+        None => frame.render_widget(CoverArt::new(track.title), cover_area),
+    }
 
+    // Title and artist at the top; progress bar and times along the bottom of the cover.
     let lines = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1); 4])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
         .split(cols[2]);
 
     frame.render_widget(
@@ -132,7 +178,7 @@ fn render_now_playing(frame: &mut Frame, view: &MusicView, area: Rect) {
     } else {
         (view.elapsed_secs as f64 / track.duration_secs as f64).clamp(0.0, 1.0)
     };
-    frame.render_widget(Paragraph::new(progress_bar(lines[2].width, progress)), lines[2]);
+    frame.render_widget(Paragraph::new(progress_bar(lines[3].width, progress)), lines[3]);
 
     // Elapsed | transport controls | total
     let play_pause = if view.playing { "❚❚" } else { "▶" };
@@ -141,7 +187,7 @@ fn render_now_playing(frame: &mut Frame, view: &MusicView, area: Rect) {
             format_time(view.elapsed_secs),
             Style::new().fg(FAINT),
         )),
-        lines[3],
+        lines[4],
     );
     frame.render_widget(
         Paragraph::new(Span::styled(
@@ -149,7 +195,7 @@ fn render_now_playing(frame: &mut Frame, view: &MusicView, area: Rect) {
             Style::new().fg(MUTED),
         ))
         .alignment(Alignment::Center),
-        lines[3],
+        lines[4],
     );
     frame.render_widget(
         Paragraph::new(Span::styled(
@@ -157,7 +203,7 @@ fn render_now_playing(frame: &mut Frame, view: &MusicView, area: Rect) {
             Style::new().fg(FAINT),
         ))
         .alignment(Alignment::Right),
-        lines[3],
+        lines[4],
     );
 }
 
@@ -207,7 +253,10 @@ fn render_queue_row(frame: &mut Frame, track: &TrackView, is_current: bool, area
         frame.render_widget(Block::default().style(Style::new().bg(SELECTED_BG)), row);
     }
 
-    frame.render_widget(CoverArt::new(track.title), cols[2]);
+    match track.cover {
+        Some(cover) => frame.render_widget(CoverImage::new(&cover.small), cols[2]),
+        None => frame.render_widget(CoverArt::new(track.title), cols[2]),
+    }
 
     let title_style = if is_current {
         Style::new().fg(TEXT).add_modifier(Modifier::BOLD)
@@ -244,7 +293,7 @@ fn progress_bar(width: u16, progress: f64) -> Line<'static> {
 }
 
 /// 215 → "3:35"
-fn format_time(secs: u32) -> String {
+pub(super) fn format_time(secs: u32) -> String {
     format!("{}:{:02}", secs / 60, secs % 60)
 }
 
@@ -257,15 +306,15 @@ const COVER_PALETTE: [Color; 6] = [
     Color::Rgb(230, 200, 90),  // yellow
 ];
 
-/// Pixel-art cover generated from a seed (the track title), mirrored left-right like an
+/// Fallback art while a real cover loads (or if there isn't one): pixel art generated from a seed (the track title), mirrored left-right like an
 /// identicon. The same title always gives the same picture. Drawn with half-blocks, so an
 /// area of W × H cells is a W × 2H pixel grid.
-struct CoverArt {
+pub(super) struct CoverArt {
     hash: u64,
 }
 
 impl CoverArt {
-    fn new(seed: &str) -> Self {
+    pub(super) fn new(seed: &str) -> Self {
         Self { hash: fnv1a(seed) }
     }
 

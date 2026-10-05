@@ -1,13 +1,15 @@
 use super::moon::{self, Moon, SmallMoon};
+use super::music;
 use super::theme::{ACCENT, FAINT, MUTED, SELECTED_BG, TEXT, TRACK, URGENT};
 use super::{content_area, divider};
 use crate::app::{App, CategoryTypes, Task, ordered_task_indices};
+use crate::cover::{self, CoverImage};
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Block, Paragraph, Wrap};
 
 /// Week strip moons are 2 braille characters on one line.
 const SMALL_MOON_WIDTH: u16 = 2;
@@ -17,9 +19,6 @@ const HEADER_DATE_FORMAT: &str = "%A · %d %b · %H:%M";
 /// Completed tasks needed to go up one level in a stat.
 const XP_PER_LEVEL: usize = 3;
 
-// Placeholder until the music tab exists.
-const NOW_PLAYING_TITLE: &str = "Burn My Dread";
-const NOW_PLAYING_TIME: &str = "2:14 / 3:35";
 
 pub fn render(frame: &mut Frame, app: &App, rows: &[Rect]) {
     let now = Local::now().naive_local();
@@ -73,7 +72,7 @@ pub fn render(frame: &mut Frame, app: &App, rows: &[Rect]) {
         .split(sections[6]);
 
     render_status(frame, &app.tasks, bottom_cols[0]);
-    render_now_playing(frame, bottom_cols[1]);
+    render_now_playing(frame, app, bottom_cols[1]);
 
     frame.render_widget(super::footer(app.active_tab), rows[4]);
 }
@@ -255,13 +254,14 @@ fn progress_bar(width: u16, progress: f64) -> Line<'static> {
     ])
 }
 
-fn render_now_playing(frame: &mut Frame, area: Rect) {
+/// Compact version of the Music tab's player: thumbnail, title and time.
+fn render_now_playing(frame: &mut Frame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Length(1),
-            Constraint::Length(2),
+            Constraint::Length(cover::SMALL_ROWS),
         ])
         .split(area);
 
@@ -272,23 +272,58 @@ fn render_now_playing(frame: &mut Frame, area: Rect) {
 
     let track_cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(5), Constraint::Length(2), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(cover::SMALL_COLS),
+            Constraint::Length(2),
+            Constraint::Min(0),
+        ])
         .split(rows[2]);
 
-    // Square "album art" icon, two rows of half-blocks.
-    let icon_style = Style::new().fg(ACCENT);
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(Span::styled("█▀▀▀█", icon_style)),
-            Line::from(Span::styled("█▄▄▄█", icon_style)),
-        ]),
-        track_cols[0],
-    );
+    let playing = app
+        .music
+        .snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.now_playing.as_ref().map(|item| (snapshot, item)));
+
+    let Some((snapshot, item)) = playing else {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                music::status_message(&app.music),
+                Style::new().fg(FAINT),
+            ))
+            .wrap(Wrap { trim: true }),
+            Rect {
+                height: area.height.saturating_sub(2),
+                ..rows[2]
+            },
+        );
+        return;
+    };
+
+    // Real album art once downloaded, generated art until then.
+    match &item.cover {
+        Some(cover) => frame.render_widget(CoverImage::new(&cover.small), track_cols[0]),
+        None => frame.render_widget(music::CoverArt::new(&item.title), track_cols[0]),
+    }
+
+    let elapsed = snapshot.current_progress_secs().max(0) as u32;
+    let duration = item.duration_secs.max(0) as u32;
+    let mut time = vec![Span::styled(
+        format!(
+            "{} / {}",
+            music::format_time(elapsed),
+            music::format_time(duration)
+        ),
+        Style::new().fg(FAINT),
+    )];
+    if !snapshot.is_playing {
+        time.push(Span::styled(" · paused", Style::new().fg(FAINT)));
+    }
 
     frame.render_widget(
         Paragraph::new(vec![
-            Line::from(Span::styled(NOW_PLAYING_TITLE, Style::new().fg(TEXT))),
-            Line::from(Span::styled(NOW_PLAYING_TIME, Style::new().fg(FAINT))),
+            Line::from(Span::styled(item.title.as_str(), Style::new().fg(TEXT))),
+            Line::from(time),
         ]),
         track_cols[2],
     );

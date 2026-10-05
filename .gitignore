@@ -2,3 +2,6 @@
 
 # Local config with your Spotify client ID (see config.example.toml)
 /config.toml
+
+# Spotify login token (includes the refresh token) - never commit
+/.spotify_token_cache.json

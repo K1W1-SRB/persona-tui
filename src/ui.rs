@@ -85,13 +85,13 @@ fn footer(active_tab: Tab) -> Tabs<'static> {
     let footer_entries: Vec<Line> = std::iter::once(("1-4", " tab"))
         .chain(tab_keys.iter().copied())
         .chain(std::iter::once(("q", " quit")))
-    .map(|(key, label)| {
-        Line::from(vec![
-            Span::styled(key, Style::new().bold().yellow()),
-            Span::styled(label, Style::new().dark_gray()),
-        ])
-    })
-    .collect();
+        .map(|(key, label)| {
+            Line::from(vec![
+                Span::styled(key, Style::new().bold().yellow()),
+                Span::styled(label, Style::new().dark_gray()),
+            ])
+        })
+        .collect();
 
     Tabs::new(footer_entries)
         .block(Block::default())
@@ -100,8 +100,6 @@ fn footer(active_tab: Tab) -> Tabs<'static> {
         .highlight_style(Style::default())
 }
 
-/// Everything between the tab line and the footer, with page padding applied.
-/// rows[1] is taller than the single tab line, so this starts right below that line.
 fn content_area(rows: &[Rect]) -> Rect {
     let below_tabs = rows[1].union(rows[3]);
     let below_tabs = Rect {
