@@ -1,8 +1,5 @@
-use crate::{
-    app::Tab::{Calendar, VelvetRoom},
-    ui,
-};
-use chrono::{Duration, Local, NaiveDateTime};
+use crate::ui;
+use chrono::{Days, Duration, Local, Months, NaiveDate, NaiveDateTime};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{DefaultTerminal, Frame};
 use serde::{Deserialize, Serialize};
@@ -19,7 +16,7 @@ pub enum Tab {
     Music,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum CategoryTypes {
     Knowledge,
     Kindness,
@@ -190,6 +187,8 @@ pub struct App {
     pub tasks: Vec<Task>,
     pub(crate) selected: usize,
     pub(crate) new_task_draft: Option<NewTaskDraft>,
+    /// Day highlighted on the calendar tab; the month shown is the month this falls in.
+    pub(crate) calendar_selected: NaiveDate,
 }
 
 impl App {
@@ -199,12 +198,18 @@ impl App {
             tasks: load_tasks(),
             selected: 0,
             new_task_draft: None,
+            calendar_selected: Local::now().date_naive(),
         }
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
         loop {
             terminal.draw(|frame| self.render(frame))?;
+
+            // Timeout with no input: loop back and redraw so the clock stays current.
+            if !crossterm::event::poll(std::time::Duration::from_millis(100))? {
+                continue;
+            }
 
             if let Event::Key(key) = crossterm::event::read()? {
                 if key.kind != KeyEventKind::Press {
@@ -226,6 +231,9 @@ impl App {
                 if self.active_tab == Tab::Tasks {
                     self.handle_task_key(key);
                 }
+                if self.active_tab == Tab::Calendar {
+                    self.handle_calendar_key(key);
+                }
             }
         }
     }
@@ -235,16 +243,42 @@ impl App {
             KeyCode::Char('j') => self.move_selection(1),
             KeyCode::Char('k') => self.move_selection(-1),
             KeyCode::Char(' ') => self.toggle_selected(),
-            KeyCode::Char('n') => {
-                self.new_task_draft = Some(NewTaskDraft {
-                    title: String::new(),
-                    category: CategoryTypes::Knowledge,
-                    date_input: String::new(),
-                    stage: NewTaskStage::Title,
-                    error: None,
-                });
-            }
+            KeyCode::Char('n') => self.start_new_task(String::new()),
             _ => {}
+        }
+    }
+
+    /// Opens the new-task prompt. `date_input` pre-fills the due date field.
+    fn start_new_task(&mut self, date_input: String) {
+        self.new_task_draft = Some(NewTaskDraft {
+            title: String::new(),
+            category: CategoryTypes::Knowledge,
+            date_input,
+            stage: NewTaskStage::Title,
+            error: None,
+        });
+    }
+
+    fn handle_calendar_key(&mut self, key: KeyEvent) {
+        let selected = self.calendar_selected;
+        let moved = match key.code {
+            KeyCode::Char('h') | KeyCode::Left => selected.checked_sub_days(Days::new(1)),
+            KeyCode::Char('l') | KeyCode::Right => selected.checked_add_days(Days::new(1)),
+            KeyCode::Char('k') | KeyCode::Up => selected.checked_sub_days(Days::new(7)),
+            KeyCode::Char('j') | KeyCode::Down => selected.checked_add_days(Days::new(7)),
+            // Same day in the neighbouring month, clamped to that month's last day.
+            KeyCode::Char('[') => selected.checked_sub_months(Months::new(1)),
+            KeyCode::Char(']') => selected.checked_add_months(Months::new(1)),
+            KeyCode::Char('t') => Some(Local::now().date_naive()),
+            KeyCode::Char('n') => {
+                // Due date is the selected day, so only the time needs typing.
+                self.start_new_task(selected.format("%d/%m/%Y ").to_string());
+                None
+            }
+            _ => None,
+        };
+        if let Some(date) = moved {
+            self.calendar_selected = date;
         }
     }
 

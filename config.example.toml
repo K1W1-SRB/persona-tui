@@ -1,0 +1,17 @@
+# persona-tui configuration
+#
+# Copy this file to `config.toml` and fill in your own values.
+# config.toml is git-ignored, so your settings stay on your machine.
+
+[spotify]
+# Client ID of your own Spotify app.
+# 1. Go to https://developer.spotify.com/dashboard and create an app.
+# 2. Under "Redirect URIs", add the redirect_uri below exactly as written.
+# 3. Copy the app's Client ID here.
+# No client secret is needed: persona-tui logs in with PKCE.
+client_id = "your-client-id-here"
+
+# Must match a Redirect URI registered on your Spotify app, character for character.
+# Spotify requires a loopback IP (127.0.0.1), not "localhost".
+# Change the port if 8888 is already in use on your machine.
+redirect_uri = "http://127.0.0.1:8888/callback"
