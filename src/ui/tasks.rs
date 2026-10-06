@@ -230,7 +230,7 @@ fn render_open_task(frame: &mut Frame, area: Rect, task: &Task, bar_color: Optio
         frame.render_widget(Block::default().style(Style::new().bg(color)), cols[0]);
     }
 
-    let row_bg = if selected { SELECTED_BG } else { Color::Reset };
+    let row_bg = if selected { SELECTED_BG } else { super::BG_BLUE };
     frame.render_widget(Block::default().style(Style::new().bg(row_bg)), cols[1]);
 
     let lines = Layout::default()
